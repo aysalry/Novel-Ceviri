@@ -21,11 +21,7 @@
 <img src="screenshots/ceviri-kuyrugu.png" width="80%" alt="Çeviri kuyruğu ekranı" />
 <br /><br />
 <img src="screenshots/webden-al.png" width="80%" alt="Web'den roman indirme ekranı" />
-<br /><br />
-<img src="screenshots/ayarlar.png" width="80%" alt="Ayarlar ekranı" />
 </div>
-
-> Yukarıdaki görseller `screenshots/` klasörüne eklenmeyi bekliyor -- kendi ekran görüntülerini bu isimlerle (`ceviri-kuyrugu.png`, `webden-al.png`, `ayarlar.png`) o klasöre koyman yeterli.
 
 ## Özellikler
 
