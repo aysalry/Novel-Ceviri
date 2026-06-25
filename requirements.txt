@@ -1,0 +1,5 @@
+PyQt6>=6.6
+lxml>=5.0
+requests>=2.31
+charset-normalizer>=3.3
+Pillow>=10.0
