@@ -157,11 +157,22 @@ def read_existing_chapters(epub_path):
 
 
 def merge_and_build_epub(
-        novel_info, new_chapters, output_path, cover_bytes=None, language='en'):
+        novel_info, new_chapters, output_path, cover_bytes=None,
+        language='en', keep_existing_count=None):
     """Like build_epub(), but if output_path already exists (e.g. an
     earlier download of the same novel), its existing chapters are read
     back and kept ahead of the newly fetched ones instead of being
     discarded. Returns how many existing chapters were carried over.
+
+    keep_existing_count caps how many of those existing chapters actually
+    get kept -- callers that know exactly where the new range starts (the
+    "EPUB Oluştur" button, via the chosen start chapter) pass it so a
+    fresh build from chapter 1 truly starts fresh instead of re-reading
+    and re-prepending whatever unrelated content used to be at this same
+    path (which otherwise duplicated chapters or stitched two different
+    novels together if the path happened to be reused). None means "keep
+    everything that's there," which is what the tracked-library updater
+    wants, since its new_chapters never overlaps what's already saved.
     """
     existing_chapters = []
     if os.path.exists(output_path):
@@ -169,6 +180,8 @@ def merge_and_build_epub(
             existing_chapters = read_existing_chapters(output_path)
         except Exception:
             existing_chapters = []
+    if keep_existing_count is not None:
+        existing_chapters = existing_chapters[:keep_existing_count]
     build_epub(
         novel_info, existing_chapters + new_chapters, output_path,
         cover_bytes=cover_bytes, language=language)

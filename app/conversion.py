@@ -46,7 +46,19 @@ def _run_translation(translator, element_handler, cache, elements,
                       cancel_request=None, pause_request=None, is_batch=False):
     original_group = element_handler.prepare_original(elements)
     cache.save(original_group)
-    paragraphs = cache.all_paragraphs()
+    # cache.all_paragraphs() would return every row ever stored under this
+    # cache id, not just this run's -- the cache is keyed by output path,
+    # and a webnovel download re-creates the same path with a different
+    # chapter range every time (or any file gets edited/replaced and
+    # retranslated at the same path), so the old, larger run's leftover
+    # rows would silently get treated as "also needs translating" even
+    # though they're not part of the current file at all. Each tuple in
+    # original_group is (oid, md5, raw, content, ignored, attrs, page_id)
+    # -- restrict to exactly the ids this run just extracted, skipping the
+    # ones already marked ignored (empty content), matching what
+    # all_paragraphs()'s "WHERE NOT ignored" used to filter.
+    current_ids = [unit[0] for unit in original_group if not unit[4]]
+    paragraphs = cache.get_paragraphs(current_ids)
 
     translation = get_translation(translator, log or dummy)
     translation.set_batch(is_batch)

@@ -27,7 +27,7 @@ defaults = {
     'cache_enabled': True,
     'cache_path': None,
 
-    'translation_position': 'below',
+    'translation_position': 'only',
     'column_gap': {
         '_type': 'percentage',
         'percentage': 10,
@@ -53,6 +53,16 @@ defaults = {
     'search_paths': [],
 
     'log_translation': True,
+    'show_notification': True,
+    'custom_engines': {},
+
+    'first_run_completed': False,
+    'update_check_last_at': 0,
+    'update_check_skip_version': None,
+
+    'reader_theme': 'light',
+    'reader_font_family': None,
+    'reader_font_pct': 100,
 }
 
 

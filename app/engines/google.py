@@ -13,7 +13,7 @@ class GoogleFreeTranslateNew(Base):
     no quota dialog -- this is the default, zero-setup engine.
     """
     name = 'Google(Free)New'
-    alias = 'Google (Free) - New'
+    alias = 'Google (Free)'
     free = True
     lang_codes = Base.load_lang_codes(google)
     endpoint: str = 'https://translate-pa.googleapis.com/v1/translate'
@@ -58,13 +58,24 @@ class GeminiTranslate(GenAI):
     # details: https://ai.google.dev/gemini-api/docs/api-versions
     endpoint = 'https://generativelanguage.googleapis.com/v1beta/models'
     # https://ai.google.dev/gemini-api/docs/troubleshooting
-    api_key_errors: list[str] = [
-        'API_KEY_INVALID', 'PERMISSION_DENIED', 'RESOURCE_EXHAUSTED']
+    # RESOURCE_EXHAUSTED deliberately isn't here -- it's Gemini's rate-limit
+    # code (HTTP 429, "wait and retry with backoff" per Google's own docs),
+    # not a dead/invalid key. Treating it as a key error used to make
+    # translate_text() raise NoAvailableApiKey and cancel the *entire job*
+    # the moment the free tier's per-minute quota was hit, telling the user
+    # their key was "rejected" when it was simply rate-limited -- instead of
+    # retrying with backoff like every other transient error does.
+    api_key_errors: list[str] = ['API_KEY_INVALID', 'PERMISSION_DENIED']
+    key_hint = _(
+        'Gemini için ücretsiz bir anahtar alabileceğin adres: '
+        'aistudio.google.com/apikey')
 
-    # Gemini's free tier is rate-limited per-minute, so default to
-    # sequential requests instead of the Google-Free concurrency defaults.
+    # Gemini's free tier is rate-limited per-minute (commonly 15 RPM as of
+    # writing), so default to sequential requests spaced out enough to
+    # stay under that instead of the Google-Free concurrency defaults --
+    # paid-tier users can raise both via Settings.
     concurrency_limit = 1
-    request_interval: float = 1.0
+    request_interval: float = 4.0
     request_timeout: float = 30.0
 
     prompt = (
@@ -81,7 +92,11 @@ class GeminiTranslate(GenAI):
     top_k = 1
     stream = True
 
-    models: list[str] = []
+    # Shown as a dropdown in Settings (still editable -- Google ships new
+    # model names faster than this list can track).
+    models: list[str] = [
+        'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash',
+        'gemini-1.5-pro']
     model: str | None = 'gemini-2.0-flash'
 
     def __init__(self):

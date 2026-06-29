@@ -2,8 +2,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QVBoxLayout
 
 from ..core.i18n import _
-
-APP_VERSION = '1.0.0'
+from ..core.version import APP_VERSION
 
 
 class AboutDialog(QDialog):
@@ -25,9 +24,10 @@ class AboutDialog(QDialog):
 
         description = QLabel(_(
             'Webnovel ve lightnovel çevirisi için bağımsız bir araç. '
-            'Google, Microsoft Edge, DeepL ve Gemini ile EPUB, TXT ve SRT '
-            'dosyalarını çevirir; novelfire.net, novelight.net ve '
-            'novelbuddy.com gibi sitelerden de doğrudan roman indirebilir.'))
+            'Google, Microsoft Edge, DeepL, Gemini, OpenAI, Claude, '
+            'OpenRouter ve özel API\'lerle EPUB, TXT ve SRT dosyalarını '
+            'çevirir; novelfire.net, novelight.net ve novelbuddy.com gibi '
+            'sitelerden de doğrudan roman indirebilir.'))
         description.setWordWrap(True)
         description.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(description)

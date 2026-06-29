@@ -4,6 +4,8 @@ from PyQt6.QtCore import QObject
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
 
+from ..core.config import get_config
+
 _tray_icon: QSystemTrayIcon | None = None
 
 
@@ -32,9 +34,12 @@ def _get_tray_icon() -> QSystemTrayIcon:
 
 def notify(title: str, message: str) -> None:
     """Best-effort desktop notification -- silently does nothing on
-    systems without a tray (some Linux setups), since this is a
-    convenience, not something correctness depends on.
+    systems without a tray (some Linux setups) or when the user has
+    turned notifications off in Settings, since this is a convenience,
+    not something correctness depends on.
     """
+    if not get_config().get('show_notification', True):
+        return
     if not QSystemTrayIcon.isSystemTrayAvailable():
         return
     tray = _get_tray_icon()

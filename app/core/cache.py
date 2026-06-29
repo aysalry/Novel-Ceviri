@@ -58,7 +58,6 @@ def cache_path():
 
 
 class TranslationCache:
-    fresh = True
     dir_path = cache_path()
     cache_path = os.path.join(dir_path, 'cache')
     temp_path = os.path.join(dir_path, 'temp')
@@ -71,10 +70,6 @@ class TranslationCache:
         self.identity = identity
         self.persistence = persistence
         self.file_path = self._path(identity)
-        # An interruption may occur, resulting in the cache size being less
-        # than 50,000 bytes. Therefore, we need to resave it again.
-        if os.path.exists(self.file_path) and self.size() > 50000:
-            self.fresh = False
         self.cache_only = False
         self.connection = sqlite3.connect(
             self.file_path, check_same_thread=False)
@@ -106,10 +101,22 @@ class TranslationCache:
     @classmethod
     def remove(cls, filename):
         file_path = os.path.join(cls.cache_path, filename)
-        os.path.exists(file_path) and os.remove(file_path)
+        try:
+            os.path.exists(file_path) and os.remove(file_path)
+        except OSError:
+            # A cache file still open from the current/last run (its
+            # sqlite3 connection never got close()d, or Windows just
+            # hasn't released the handle yet) can't be deleted while
+            # locked -- skipping it here is what makes "Önbelleği
+            # Temizle" actually clear everything else instead of
+            # raising on the first locked file and leaving the whole
+            # button looking like it does nothing.
+            pass
 
     @classmethod
     def clean(cls):
+        if not os.path.exists(cls.cache_path):
+            return
         for filename in os.listdir(cls.cache_path):
             cls.remove(filename)
 
@@ -143,9 +150,6 @@ class TranslationCache:
     def size(self):
         return os.path.getsize(self.file_path)
 
-    def is_fresh(self):
-        return self.fresh
-
     def get_identity(self):
         return self.identity
 
@@ -174,16 +178,28 @@ class TranslationCache:
         self.connection.commit()
 
     def save(self, original_group):
-        if self.is_fresh():
-            for original_unit in original_group:
-                self.add(*original_unit)
-            self.connection.commit()
+        # add() is a plain "INSERT ... ON CONFLICT DO NOTHING" -- already
+        # a no-op for ids that exist, so there's no real cost to calling
+        # it unconditionally. Skipping it whenever the cache file happened
+        # to already be over 50KB (is_fresh() == False) used to mean any
+        # genuinely new id in original_group -- e.g. a webnovel's newly
+        # downloaded chapters reusing the same cache identity as an
+        # earlier, smaller run -- never got inserted at all, so the
+        # translation step later found zero matching rows for them and
+        # the whole job reported "no content to translate."
+        for original_unit in original_group:
+            self.add(*original_unit)
+        self.connection.commit()
 
     def all(self):
         resource = self.cursor.execute('SELECT * FROM cache WHERE NOT ignored')
         return resource.fetchall()
 
     def get(self, ids):
+        if not ids:
+            # "WHERE id IN ()" is invalid SQL -- an empty id list just
+            # means "nothing matched," not an error.
+            return []
         placeholders = ', '.join(['?'] * len(ids))
         resource = self.cursor.execute(
             'SELECT * FROM cache WHERE id IN (%s) ' % placeholders, tuple(ids))

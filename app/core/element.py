@@ -656,7 +656,7 @@ class ElementHandler:
 
     def prepare_original(self, elements):
         count = 0
-        for oid, element in enumerate(elements):
+        for element in elements:
             element.set_placeholder(self.placeholder)
             element.set_position(self.position)
             element.set_target_direction(self.target_direction)
@@ -673,14 +673,24 @@ class ElementHandler:
             # may only contain ignored elements.
             if content.strip() == '':
                 element.set_ignored(True)
-            md5 = uid('%s%s' % (oid, content))
+            # Hashing content alone (not "position + content") makes the
+            # cache id stable across runs of a file at the same cache
+            # identity whose element count/order changed since the last
+            # run -- e.g. a webnovel re-downloaded with extra chapters
+            # added, which also grows the TOC and shifts every later
+            # paragraph's position by however many TOC entries were added.
+            # A position-based id would then collide with a *different*
+            # old paragraph that happened to land on the same position,
+            # silently keeping its stale (or absent) cached translation
+            # instead of this run's actual content.
+            content_id = uid(content)
             attrs = element.get_attributes()
             if not element.ignored:
                 self.elements[count] = element
                 count += 1
             self.originals.append((
-                oid, md5, raw, content, element.ignored, attrs,
-                element.page_id))
+                content_id, content_id, raw, content, element.ignored,
+                attrs, element.page_id))
         return self.originals
 
     def prepare_translation(self, paragraphs):
@@ -708,7 +718,6 @@ class ElementHandlerMerge(ElementHandler):
     def prepare_original(self, elements):
         raw = ''
         txt = ''
-        oid = 0
         for eid, element in enumerate(elements):
             self.elements[eid] = element
             if element.ignored:
@@ -731,14 +740,18 @@ class ElementHandlerMerge(ElementHandler):
                 txt += content
                 continue
             elif txt:
-                md5 = uid('%s%s' % (oid, txt))
-                self.originals.append((oid, md5, raw, txt, False))
-                oid += 1
+                # See ElementHandler.prepare_original -- hashing the
+                # merged batch's own text instead of "batch index + text"
+                # keeps this stable across runs of the same cache identity
+                # whose merge-batch boundaries shifted (different content
+                # length changes where merge_length splits batches).
+                content_id = uid(txt)
+                self.originals.append((content_id, content_id, raw, txt, False))
             raw = code
             txt = content
-        md5 = uid('%s%s' % (oid, txt))
         if txt:
-            self.originals.append((oid, md5, raw, txt, False))
+            content_id = uid(txt)
+            self.originals.append((content_id, content_id, raw, txt, False))
         return self.originals
 
     def align_paragraph(self, paragraph):
@@ -848,7 +861,7 @@ def get_page_elements(pages):
 def get_element_handler(placeholder, separator, direction):
     config = get_config()
     position_alias = {'before': 'above', 'after': 'below'}
-    position = config.get('translation_position', 'below')
+    position = config.get('translation_position', 'only')
     position = position_alias.get(position) or position
     handler = ElementHandler(placeholder, separator, position)
     if config.get('merge_enabled'):

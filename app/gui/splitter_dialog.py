@@ -93,8 +93,8 @@ class SplitterDialog(QDialog):
         if not self.source_path:
             QMessageBox.warning(self, _('Uyarı'), _('Önce bir dosya seç.'))
             return
-        text = open_file(self.source_path)
         try:
+            text = open_file(self.source_path)
             self.chapters = split_into_chapters(text, self._current_pattern())
         except Exception as e:
             QMessageBox.critical(self, _('Hata'), str(e))
@@ -114,19 +114,27 @@ class SplitterDialog(QDialog):
         if not output_dir:
             QMessageBox.warning(self, _('Uyarı'), _('Önce çıktı klasörü seç.'))
             return
-        os.makedirs(output_dir, exist_ok=True)
-
         written = []
-        for index, (title, body) in enumerate(self.chapters, start=1):
-            safe_title = ''.join(
-                c for c in (title or '') if c.isalnum() or c in ' _-').strip()
-            filename = '%02d_%s.txt' % (index, safe_title[:60] or 'bolum')
-            out_path = os.path.join(output_dir, filename)
-            with open(out_path, 'w', encoding='utf-8', newline='\n') as file:
-                if title:
-                    file.write(title + '\n\n')
-                file.write(body)
-            written.append(out_path)
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            for index, (title, body) in enumerate(self.chapters, start=1):
+                safe_title = ''.join(
+                    c for c in (title or '') if c.isalnum() or c in ' _-'
+                ).strip()
+                filename = '%02d_%s.txt' % (index, safe_title[:60] or 'bolum')
+                out_path = os.path.join(output_dir, filename)
+                with open(out_path, 'w', encoding='utf-8', newline='\n') as file:
+                    if title:
+                        file.write(title + '\n\n')
+                    file.write(body)
+                written.append(out_path)
+        except OSError as e:
+            QMessageBox.warning(
+                self, _('Kaydedilemedi'),
+                _('Bölüm dosyaları yazılırken hata oluştu ({} / {} dosya '
+                  'yazıldı):\n{}').format(len(written), len(self.chapters), e))
+            self.written_files = written
+            return
 
         self.written_files = written
         QMessageBox.information(

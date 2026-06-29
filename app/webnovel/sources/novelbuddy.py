@@ -108,7 +108,18 @@ class NovelBuddySource(NovelSource):
             'chaptersCount', len(chapters))
         if chapters_count > len(chapters) and chapters:
             cached = chapter_cache.load(url)
-            if cached and len(cached) >= chapters_count:
+            # len(cached) >= chapters_count alone doesn't catch the site
+            # deleting/renumbering chapters while keeping the count the
+            # same or lower -- cross-check that the freshly-fetched tail
+            # (this call's own `chapters`, the newest-N from the page we
+            # just loaded) still appears at the end of the cached list;
+            # if the novel's been restructured, it won't, and the cache
+            # is stale rather than reusable.
+            cached_is_valid = (
+                cached and len(cached) >= chapters_count
+                and {c.url for c in cached[-len(chapters):]}
+                == {c.url for c in chapters})
+            if cached_is_valid:
                 chapters = cached
             else:
                 chapters = self._walk_chapter_gap(
@@ -140,8 +151,16 @@ class NovelBuddySource(NovelSource):
                 return known_chapters
             try:
                 page_html = self._get(current_url)
-            except Exception:
-                break
+            except Exception as e:
+                # A genuine fetch failure mid-walk is not "we've reached
+                # the last chapter" (that's the missing-nextChapter check
+                # below) -- silently returning the partial result let an
+                # incomplete chapter list pass for a fully-fetched novel
+                # with no indication anything had gone wrong.
+                raise NovelSourceError(
+                    _('Bölüm listesi taranırken kesildi ({}/{} bölüm '
+                      'bulundu) -- ağ hatası: {}')
+                    .format(len(result), total_count, e))
             next_chapter = _next_data_props(page_html).get('nextChapter')
             if not next_chapter or not next_chapter.get('url'):
                 break

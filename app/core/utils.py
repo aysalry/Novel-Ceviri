@@ -11,6 +11,7 @@ from urllib.request import getproxies
 from subprocess import Popen
 
 import requests
+from lxml import etree
 
 from .cssselect import GenericTranslator, SelectorError
 
@@ -216,6 +217,25 @@ def atomic_write_json(path, data, **dump_kwargs):
 
 def traceback_error():
     return traceback.format_exc(chain=False).strip()
+
+
+def parse_xml_lenient(data):
+    """A lot of real-world EPUBs (sloppy converters, scraped webnovels,
+    hand-edited files) aren't well-formed XML -- an unescaped "&", an
+    unclosed <br>/<img>, a stray HTML5 construct -- which etree.fromstring()
+    refuses outright with XMLSyntaxError even though the document is
+    perfectly readable as markup. Falling back to a recovering parser
+    salvages whatever it can instead of failing the entire file (and
+    everything downstream: translation, the built-in reader, cover
+    extraction) over one malformed tag.
+    """
+    try:
+        return etree.fromstring(data)
+    except etree.XMLSyntaxError:
+        root = etree.fromstring(data, parser=etree.XMLParser(recover=True))
+        if root is None:
+            raise
+        return root
 
 
 def request(

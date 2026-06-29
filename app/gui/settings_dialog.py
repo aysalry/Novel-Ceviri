@@ -1,17 +1,21 @@
+import re
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QColorDialog, QDialog,
     QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QScrollArea,
-    QSlider, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
+    QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QPushButton,
+    QRadioButton, QScrollArea, QSlider, QSpinBox, QTabWidget, QVBoxLayout,
+    QWidget)
 
 from ..core.cache import TranslationCache
 from ..core.config import get_config
 from ..core.i18n import _
-from ..engines import builtin_engines
+from ..engines import builtin_engines, get_all_engines
+from ..engines.custom import build_custom_engine_class
+from .custom_engine_dialog import CustomEngineDialog
 from .engine_test_worker import EngineTestWorker
-from .glossary_dialog import GlossaryDialog
 from .theme import apply_theme
 
 
@@ -26,6 +30,7 @@ class SettingsDialog(QDialog):
         self._test_worker = None
         self._test_engine_class = None
         self._test_original_config = None
+        self._custom_engines_draft = {}
 
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -36,6 +41,8 @@ class SettingsDialog(QDialog):
             self._scrollable(self._build_engine_tab()), _('Motor ve Hız'))
         self.tabs.addTab(
             self._scrollable(self._build_output_tab()), _('Çıktı Görünümü'))
+        self.tabs.addTab(
+            self._scrollable(self._build_filter_tab()), _('Filtreleme'))
         self.tabs.addTab(self._scrollable(self._build_cache_tab()), _('Önbellek'))
 
         buttons = QHBoxLayout()
@@ -87,29 +94,6 @@ class SettingsDialog(QDialog):
         folder_layout.addLayout(folder_row)
         layout.addWidget(folder_group)
 
-        glossary_group = QGroupBox(_('Çeviri Sözlüğü'))
-        glossary_layout = QVBoxLayout(glossary_group)
-        self.glossary_enabled_check = QCheckBox(_('Sözlük kullan'))
-        glossary_layout.addWidget(self.glossary_enabled_check)
-        glossary_row = QHBoxLayout()
-        self.glossary_path_edit = QLineEdit()
-        self.glossary_path_edit.setReadOnly(True)
-        glossary_browse_btn = QPushButton(_('Dosya Seç...'))
-        glossary_browse_btn.clicked.connect(self._browse_glossary)
-        glossary_edit_btn = QPushButton(_('Düzenle...'))
-        glossary_edit_btn.clicked.connect(self._open_glossary_editor)
-        glossary_row.addWidget(self.glossary_path_edit)
-        glossary_row.addWidget(glossary_browse_btn)
-        glossary_row.addWidget(glossary_edit_btn)
-        glossary_layout.addLayout(glossary_row)
-        glossary_hint = QLabel(_(
-            'Karakter/yer adlarının her bölümde aynı şekilde çevrilmesini, '
-            'ya da hiç çevrilmemesini sağlar.'))
-        glossary_hint.setObjectName('hintLabel')
-        glossary_hint.setWordWrap(True)
-        glossary_layout.addWidget(glossary_hint)
-        layout.addWidget(glossary_group)
-
         theme_group = QGroupBox(_('Görünüm'))
         theme_layout = QHBoxLayout(theme_group)
         theme_layout.addWidget(QLabel(_('Tema:')))
@@ -124,6 +108,41 @@ class SettingsDialog(QDialog):
         theme_layout.addWidget(self.dark_theme_radio)
         theme_layout.addStretch()
         layout.addWidget(theme_group)
+
+        notification_group = QGroupBox(_('Bildirimler'))
+        notification_layout = QVBoxLayout(notification_group)
+        self.show_notification_check = QCheckBox(
+            _('Masaüstü bildirimleri göster'))
+        notification_layout.addWidget(self.show_notification_check)
+        layout.addWidget(notification_group)
+
+        proxy_group = QGroupBox(_('HTTP Proxy'))
+        proxy_layout = QVBoxLayout(proxy_group)
+        self.proxy_enabled_check = QCheckBox(_('Proxy kullan'))
+        proxy_layout.addWidget(self.proxy_enabled_check)
+        proxy_row = QHBoxLayout()
+        proxy_row.addWidget(QLabel(_('Sunucu:')))
+        self.proxy_host_edit = QLineEdit()
+        self.proxy_host_edit.setPlaceholderText('127.0.0.1')
+        self.proxy_host_edit.setEnabled(False)
+        proxy_row.addWidget(self.proxy_host_edit, 3)
+        proxy_row.addWidget(QLabel(_('Port:')))
+        self.proxy_port_spin = QSpinBox()
+        self.proxy_port_spin.setRange(1, 65535)
+        self.proxy_port_spin.setValue(8080)
+        self.proxy_port_spin.setEnabled(False)
+        proxy_row.addWidget(self.proxy_port_spin, 1)
+        proxy_layout.addLayout(proxy_row)
+        self.proxy_enabled_check.toggled.connect(self.proxy_host_edit.setEnabled)
+        self.proxy_enabled_check.toggled.connect(self.proxy_port_spin.setEnabled)
+        proxy_hint = QLabel(_(
+            'Google/DeepL gibi servislerin engellendiği bölgelerde, '
+            'çeviri isteklerini bir HTTP proxy üzerinden göndermek için '
+            'kullan.'))
+        proxy_hint.setObjectName('hintLabel')
+        proxy_hint.setWordWrap(True)
+        proxy_layout.addWidget(proxy_hint)
+        layout.addWidget(proxy_group)
 
         close_behavior_group = QGroupBox(_('Kapatma Düğmesi'))
         close_behavior_layout = QVBoxLayout(close_behavior_group)
@@ -182,9 +201,34 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
+        custom_group = QGroupBox(_('Özel Motorlar'))
+        custom_layout = QVBoxLayout(custom_group)
+        self.custom_engine_list = QListWidget()
+        self.custom_engine_list.setMaximumHeight(90)
+        custom_layout.addWidget(self.custom_engine_list)
+        custom_buttons = QHBoxLayout()
+        add_custom_btn = QPushButton(_('+ Ekle'))
+        add_custom_btn.clicked.connect(self._add_custom_engine)
+        edit_custom_btn = QPushButton(_('Düzenle'))
+        edit_custom_btn.clicked.connect(self._edit_custom_engine)
+        remove_custom_btn = QPushButton(_('Sil'))
+        remove_custom_btn.clicked.connect(self._remove_custom_engine)
+        custom_buttons.addWidget(add_custom_btn)
+        custom_buttons.addWidget(edit_custom_btn)
+        custom_buttons.addWidget(remove_custom_btn)
+        custom_buttons.addStretch()
+        custom_layout.addLayout(custom_buttons)
+        custom_hint = QLabel(_(
+            'Listede olmayan bir çeviri API\'sini JSON ile tanımlamak için '
+            'kullan -- eklenince aşağıdaki motor listesinde de görünür.'))
+        custom_hint.setObjectName('hintLabel')
+        custom_hint.setWordWrap(True)
+        custom_layout.addWidget(custom_hint)
+        layout.addWidget(custom_group)
+
         select_row = QFormLayout()
         self.engine_select = QComboBox()
-        for engine in builtin_engines:
+        for engine in get_all_engines():
             self.engine_select.addItem(engine.alias, engine.name)
         self.engine_select.currentIndexChanged.connect(
             self._load_engine_preferences)
@@ -196,18 +240,17 @@ class SettingsDialog(QDialog):
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         api_key_layout.addWidget(self.api_key_edit)
-        api_key_hint = QLabel(_(
-            'Gemini için ücretsiz bir anahtar alabileceğin adres: '
-            'aistudio.google.com/apikey'))
-        api_key_hint.setObjectName('hintLabel')
-        api_key_hint.setWordWrap(True)
-        api_key_layout.addWidget(api_key_hint)
+        self.api_key_hint_label = QLabel('')
+        self.api_key_hint_label.setObjectName('hintLabel')
+        self.api_key_hint_label.setWordWrap(True)
+        api_key_layout.addWidget(self.api_key_hint_label)
         layout.addWidget(self.api_key_group)
 
         self.model_group = QGroupBox(_('Model'))
         model_layout = QFormLayout(self.model_group)
-        self.model_edit = QLineEdit()
-        model_layout.addRow(_('Model adı:'), self.model_edit)
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(True)
+        model_layout.addRow(_('Model adı:'), self.model_combo)
         layout.addWidget(self.model_group)
 
         test_row = QHBoxLayout()
@@ -354,6 +397,73 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return widget
 
+    def _build_filter_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        ignore_group = QGroupBox(_('Yoksay Kuralları (CSS seçici)'))
+        ignore_layout = QVBoxLayout(ignore_group)
+        self.ignore_rules_edit = QPlainTextEdit()
+        self.ignore_rules_edit.setPlaceholderText(
+            'pre\n.no-translate')
+        self.ignore_rules_edit.setMinimumHeight(70)
+        ignore_layout.addWidget(self.ignore_rules_edit)
+        ignore_hint = QLabel(_(
+            'Her satıra bir CSS seçici. Eşleşen elemanlar hiç çeviriye '
+            'gönderilmez, olduğu gibi kalır (kod bloğu, dipnot vb. için).'))
+        ignore_hint.setObjectName('hintLabel')
+        ignore_hint.setWordWrap(True)
+        ignore_layout.addWidget(ignore_hint)
+        layout.addWidget(ignore_group)
+
+        reserve_group = QGroupBox(_('Koru Kuralları (CSS seçici)'))
+        reserve_layout = QVBoxLayout(reserve_group)
+        self.reserve_rules_edit = QPlainTextEdit()
+        self.reserve_rules_edit.setPlaceholderText('ruby\n.keep-original')
+        self.reserve_rules_edit.setMinimumHeight(70)
+        reserve_layout.addWidget(self.reserve_rules_edit)
+        reserve_hint = QLabel(_(
+            'Her satıra bir CSS seçici. Eşleşen elemanların biçimi '
+            '(linkler, ruby vb. varsayılan korumaya ek olarak) çeviri '
+            'sırasında olduğu gibi korunur.'))
+        reserve_hint.setObjectName('hintLabel')
+        reserve_hint.setWordWrap(True)
+        reserve_layout.addWidget(reserve_hint)
+        layout.addWidget(reserve_group)
+
+        filter_group = QGroupBox(_('Filtre Kuralları (metin)'))
+        filter_layout = QVBoxLayout(filter_group)
+        self.filter_rules_edit = QPlainTextEdit()
+        self.filter_rules_edit.setPlaceholderText(
+            'Reklam\n^Bölüm \\d+$')
+        self.filter_rules_edit.setMinimumHeight(70)
+        filter_layout.addWidget(self.filter_rules_edit)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel(_('Eşleştirme modu:')))
+        self._filter_mode_button_group = QButtonGroup(self)
+        self.filter_mode_normal_radio = QRadioButton(_('Normal'))
+        self.filter_mode_case_radio = QRadioButton(_('Büyük/küçük harf duyarlı'))
+        self.filter_mode_regex_radio = QRadioButton(_('Regex'))
+        for radio in (
+                self.filter_mode_normal_radio, self.filter_mode_case_radio,
+                self.filter_mode_regex_radio):
+            self._filter_mode_button_group.addButton(radio)
+            mode_row.addWidget(radio)
+        mode_row.addStretch()
+        filter_layout.addLayout(mode_row)
+        filter_hint = QLabel(_(
+            'Her satıra bir kural. Eşleşen paragraflar çeviriye '
+            'gönderilmez, olduğu gibi kalır. "Normal" satırı düz metin '
+            'olarak arar, "Regex" düzenli ifade olarak yorumlar.'))
+        filter_hint.setObjectName('hintLabel')
+        filter_hint.setWordWrap(True)
+        filter_layout.addWidget(filter_hint)
+        layout.addWidget(filter_group)
+
+        layout.addStretch()
+        return widget
+
     def _build_cache_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -412,24 +522,6 @@ class SettingsDialog(QDialog):
             self.output_path_edit.setText(path)
             self.custom_folder_radio.setChecked(True)
 
-    def _browse_glossary(self):
-        path, _filter = QFileDialog.getOpenFileName(
-            self, _('Sözlük Dosyası Seç'), '', 'Metin Dosyası (*.txt)')
-        if path:
-            self.glossary_path_edit.setText(path)
-
-    def _open_glossary_editor(self):
-        path = self.glossary_path_edit.text().strip()
-        if not path:
-            path, _filter = QFileDialog.getSaveFileName(
-                self, _('Sözlük Dosyası Oluştur'), 'sozluk.txt',
-                'Metin Dosyası (*.txt)')
-            if not path:
-                return
-            self.glossary_path_edit.setText(path)
-        if GlossaryDialog(path, self).exec():
-            self.glossary_enabled_check.setChecked(True)
-
     # -- load / save ----------------------------------------------------------
 
     def _load_values(self):
@@ -439,13 +531,25 @@ class SettingsDialog(QDialog):
         self.custom_folder_radio.setChecked(not same_folder)
         self.output_path_edit.setText(c.get('output_path') or '')
 
-        self.glossary_enabled_check.setChecked(c.get('glossary_enabled', False))
-        self.glossary_path_edit.setText(c.get('glossary_path') or '')
-
         if self._original_theme == 'dark':
             self.dark_theme_radio.setChecked(True)
         else:
             self.light_theme_radio.setChecked(True)
+
+        self.show_notification_check.setChecked(
+            c.get('show_notification', True))
+
+        proxy_enabled = c.get('proxy_enabled', False)
+        self.proxy_enabled_check.setChecked(proxy_enabled)
+        self.proxy_host_edit.setEnabled(proxy_enabled)
+        self.proxy_port_spin.setEnabled(proxy_enabled)
+        proxy_setting = c.get('proxy_setting') or []
+        if len(proxy_setting) == 2:
+            self.proxy_host_edit.setText(proxy_setting[0])
+            try:
+                self.proxy_port_spin.setValue(int(proxy_setting[1]))
+            except (TypeError, ValueError):
+                pass
 
         close_behavior = c.get('close_button_behavior', 'exit')
         self.close_tray_radio.setChecked(close_behavior == 'tray')
@@ -457,17 +561,39 @@ class SettingsDialog(QDialog):
             c.get('webnovel_check_interval_hours', 6))
         self.webnovel_check_interval_combo.setCurrentIndex(max(interval_index, 0))
 
-        position = c.get('translation_position', 'below')
+        position = c.get('translation_position', 'only')
         self.position_radios.get(
-            position, self.position_radios['below']).setChecked(True)
+            position, self.position_radios['only']).setChecked(True)
         self.original_color_edit.setText(c.get('original_color') or '')
         self.translation_color_edit.setText(c.get('translation_color') or '')
 
+        self.ignore_rules_edit.setPlainText(
+            self._rules_to_lines(c.get('ignore_rules')))
+        self.reserve_rules_edit.setPlainText(
+            self._rules_to_lines(c.get('reserve_rules')))
+        self.filter_rules_edit.setPlainText(
+            self._rules_to_lines(c.get('filter_rules')))
+        filter_mode = c.get('rule_mode', 'normal')
+        self.filter_mode_case_radio.setChecked(filter_mode == 'case')
+        self.filter_mode_regex_radio.setChecked(filter_mode == 'regex')
+        self.filter_mode_normal_radio.setChecked(
+            filter_mode not in ('case', 'regex'))
+
         self.cache_enabled_check.setChecked(c.get('cache_enabled', True))
+
+        self._custom_engines_draft = dict(c.get('custom_engines', {}))
+        self._refresh_custom_engine_list()
 
         current_engine = c.get('translate_engine') or 'Google(Free)New'
         index = self.engine_select.findData(current_engine)
         self.engine_select.setCurrentIndex(max(index, 0))
+        # merge_enabled/merge_length are global, not per-engine -- loaded
+        # once here, not inside _load_engine_preferences() (which also
+        # runs every time the "Ayarlanacak motor" dropdown changes, and
+        # used to re-read these two from disk on every switch, silently
+        # discarding whatever the user had just typed into them).
+        self.merge_enabled_check.setChecked(c.get('merge_enabled', True))
+        self.merge_length_spin.setValue(c.get('merge_length', 1800))
         self._load_engine_preferences()
 
     def _load_engine_preferences(self):
@@ -480,9 +606,14 @@ class SettingsDialog(QDialog):
         self.api_key_group.setVisible(engine_class.need_api_key)
         api_keys = prefs.get('api_keys', [])
         self.api_key_edit.setText(api_keys[0] if api_keys else '')
+        key_hint = getattr(engine_class, 'key_hint', '') or ''
+        self.api_key_hint_label.setText(key_hint)
+        self.api_key_hint_label.setVisible(bool(key_hint))
 
         self.model_group.setVisible(hasattr(engine_class, 'model'))
-        self.model_edit.setText(
+        self.model_combo.clear()
+        self.model_combo.addItems(getattr(engine_class, 'models', []) or [])
+        self.model_combo.setCurrentText(
             prefs.get('model') or getattr(engine_class, 'model', '') or '')
 
         has_temperature = hasattr(engine_class, 'temperature')
@@ -501,8 +632,6 @@ class SettingsDialog(QDialog):
         default_concurrency = engine_class.concurrency_limit or 8
         self.concurrency_spin.setValue(
             int(prefs.get('concurrency_limit') or default_concurrency))
-        self.merge_enabled_check.setChecked(self.config.get('merge_enabled', True))
-        self.merge_length_spin.setValue(self.config.get('merge_length', 1800))
         self.request_interval_spin.setValue(
             float(prefs.get(
                 'request_interval', engine_class.request_interval)))
@@ -522,7 +651,7 @@ class SettingsDialog(QDialog):
         self.test_result_label.setText('')
 
         self.api_key_edit.setText('')
-        self.model_edit.setText(getattr(engine_class, 'model', '') or '')
+        self.model_combo.setCurrentText(getattr(engine_class, 'model', '') or '')
 
         default_temperature = getattr(engine_class, 'temperature', 0.9)
         self.temperature_enabled_check.setChecked(False)
@@ -538,7 +667,92 @@ class SettingsDialog(QDialog):
 
     def _current_engine_class(self):
         engine_name = self.engine_select.currentData()
-        return next(e for e in builtin_engines if e.name == engine_name)
+        for engine in get_all_engines():
+            if engine.name == engine_name:
+                return engine
+        # Not saved yet -- a custom engine added/edited in this dialog
+        # session but not yet persisted by Kaydet.
+        custom_data = self._custom_engines_draft.get(engine_name)
+        if custom_data is not None:
+            return build_custom_engine_class(custom_data)
+        raise ValueError('Unknown engine: %s' % engine_name)
+
+    # -- custom engines ---------------------------------------------------
+
+    def _refresh_custom_engine_list(self):
+        self.custom_engine_list.clear()
+        self.custom_engine_list.addItems(sorted(self._custom_engines_draft))
+
+    def _sync_engine_select_with_draft(self, old_name, new_data):
+        """Keeps the engine dropdown in step with add/edit/remove on the
+        custom-engines draft, without waiting for Kaydet -- so a newly
+        added/renamed custom engine is selectable immediately.
+        """
+        if old_name is not None:
+            index = self.engine_select.findData(old_name)
+            if index >= 0:
+                self.engine_select.removeItem(index)
+        if new_data is not None:
+            self.engine_select.addItem(new_data['name'], new_data['name'])
+
+    def _add_custom_engine(self):
+        existing_names = (
+            [e.name for e in builtin_engines]
+            + list(self._custom_engines_draft))
+        dialog = CustomEngineDialog(
+            existing_names=existing_names, parent=self)
+        if dialog.exec() and dialog.result_data:
+            data = dialog.result_data
+            self._custom_engines_draft[data['name']] = data
+            self._refresh_custom_engine_list()
+            self._sync_engine_select_with_draft(None, data)
+
+    def _edit_custom_engine(self):
+        item = self.custom_engine_list.currentItem()
+        if item is None:
+            return
+        old_name = item.text()
+        existing_names = (
+            [e.name for e in builtin_engines]
+            + [n for n in self._custom_engines_draft if n != old_name])
+        dialog = CustomEngineDialog(
+            existing_data=self._custom_engines_draft[old_name],
+            existing_names=existing_names, parent=self)
+        if dialog.exec() and dialog.result_data:
+            data = dialog.result_data
+            del self._custom_engines_draft[old_name]
+            self._custom_engines_draft[data['name']] = data
+            self._refresh_custom_engine_list()
+            self._sync_engine_select_with_draft(old_name, data)
+
+    def _remove_custom_engine(self):
+        item = self.custom_engine_list.currentItem()
+        if item is None:
+            return
+        name = item.text()
+        # Distinct from "is this engine selected in the dropdown right
+        # here in Settings" (was_selected below) -- this is whether it's
+        # the *actual* translate engine the main window/queue would use
+        # right now. Deleting it out from under that used to silently
+        # fall back to Google(Free) with zero indication anything had
+        # changed (only discovered once a translation came out in the
+        # wrong place/language). The actual fallback is applied in
+        # _save_and_close(), since this deletion is only a draft until
+        # Kaydet is clicked.
+        message = _('"{}" özel motorunu silmek istediğine emin misin?').format(name)
+        if self.config.get('translate_engine') == name:
+            message += '\n\n' + _(
+                'Bu motor şu anda çeviri için seçili -- "Kaydet"e basınca '
+                '"Google (Free)" motoruna geri dönülecek.')
+        answer = QMessageBox.question(self, _('Onay'), message)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        del self._custom_engines_draft[name]
+        self._refresh_custom_engine_list()
+        was_selected = self.engine_select.currentData() == name
+        self._sync_engine_select_with_draft(name, None)
+        if was_selected:
+            self.engine_select.setCurrentIndex(0)
 
     # -- engine test ----------------------------------------------------------
 
@@ -547,7 +761,7 @@ class SettingsDialog(QDialog):
         api_key_text = self.api_key_edit.text().strip()
         prefs['api_keys'] = [api_key_text] if api_key_text else []
         if hasattr(engine_class, 'model'):
-            prefs['model'] = self.model_edit.text().strip()
+            prefs['model'] = self.model_combo.currentText().strip()
         if hasattr(engine_class, 'temperature') \
                 and self.temperature_enabled_check.isChecked():
             prefs['temperature'] = self.temperature_slider.value() / 100
@@ -562,6 +776,24 @@ class SettingsDialog(QDialog):
         if engine_class.need_api_key and not self.api_key_edit.text().strip():
             QMessageBox.warning(
                 self, _('Test Et'), _('Önce bir API anahtarı girmelisin.'))
+            return
+
+        # Engine settings live on the class itself (set_config() is a
+        # classmethod), not a per-instance copy -- swapping it to this
+        # test's prefs while a queue translation is running in the main
+        # window would have the *next file* QueueWorker picks up built
+        # with the test's API key/model instead of the real one, since
+        # get_translator() constructs a fresh engine instance per file
+        # and reads whatever cls.config currently holds.
+        main_window = self.parent()
+        if (main_window is not None
+                and getattr(main_window, 'worker', None) is not None
+                and main_window.worker.isRunning()):
+            QMessageBox.warning(
+                self, _('Test Et'),
+                _('Çeviri kuyruğu çalışırken motor testi yapılamaz -- '
+                  'kuyruktaki bir dosya bu motoru kullanıyor olabilir. '
+                  'Kuyruk bitince ya da durdurunca tekrar dene.'))
             return
 
         self._test_engine_class = engine_class
@@ -612,22 +844,72 @@ class SettingsDialog(QDialog):
                 return key
         return 'below'
 
+    def _selected_filter_mode(self):
+        if self.filter_mode_case_radio.isChecked():
+            return 'case'
+        if self.filter_mode_regex_radio.isChecked():
+            return 'regex'
+        return 'normal'
+
+    @staticmethod
+    def _rules_to_lines(rules):
+        return '\n'.join(rules or [])
+
+    @staticmethod
+    def _lines_to_rules(text):
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
     def _save_and_close(self):
         if self._test_in_progress():
+            return
+        if self.filter_mode_regex_radio.isChecked():
+            for rule in self._lines_to_rules(
+                    self.filter_rules_edit.toPlainText()):
+                try:
+                    re.compile(rule)
+                except re.error as e:
+                    QMessageBox.warning(
+                        self, _('Geçersiz Regex'),
+                        _('Filtre kuralı "{}" geçerli bir regex değil:\n{}')
+                        .format(rule, e))
+                    return
+        if (self.proxy_enabled_check.isChecked()
+                and not self.proxy_host_edit.text().strip()):
+            # proxy_setting only ever gets saved as [host, port] when the
+            # host field is non-empty (further down) -- with the
+            # checkbox left on and no host, that silently saved an empty
+            # [] setting, so "Proxy kullan" looked enabled but quietly
+            # did nothing.
+            QMessageBox.warning(
+                self, _('Proxy Sunucusu Eksik'),
+                _('"Proxy kullan" işaretli ama sunucu adresi boş -- bir '
+                  'adres gir ya da proxy\'yi kapat.'))
             return
         c = self.config
         c.update(
             to_source_folder=self.same_folder_radio.isChecked(),
             output_path=self.output_path_edit.text().strip() or None,
-            glossary_enabled=self.glossary_enabled_check.isChecked(),
-            glossary_path=self.glossary_path_edit.text().strip() or None,
             translation_position=self._selected_position(),
             original_color=self.original_color_edit.text().strip() or None,
             translation_color=self.translation_color_edit.text().strip() or None,
+            ignore_rules=self._lines_to_rules(
+                self.ignore_rules_edit.toPlainText()),
+            reserve_rules=self._lines_to_rules(
+                self.reserve_rules_edit.toPlainText()),
+            filter_rules=self._lines_to_rules(
+                self.filter_rules_edit.toPlainText()),
+            rule_mode=self._selected_filter_mode(),
+            custom_engines=dict(self._custom_engines_draft),
             cache_enabled=self.cache_enabled_check.isChecked(),
             merge_enabled=self.merge_enabled_check.isChecked(),
             merge_length=self.merge_length_spin.value(),
             ui_theme='dark' if self.dark_theme_radio.isChecked() else 'light',
+            show_notification=self.show_notification_check.isChecked(),
+            proxy_enabled=self.proxy_enabled_check.isChecked(),
+            proxy_setting=(
+                [self.proxy_host_edit.text().strip(),
+                 str(self.proxy_port_spin.value())]
+                if self.proxy_host_edit.text().strip() else []),
             close_button_behavior=(
                 'tray' if self.close_tray_radio.isChecked() else 'exit'),
             webnovel_check_enabled=self.webnovel_check_enabled_check.isChecked(),
@@ -635,13 +917,24 @@ class SettingsDialog(QDialog):
                 self.webnovel_check_interval_combo.currentData()),
         )
 
+        # If the currently-active translate engine was a custom one that
+        # just got deleted above, fall back to the default rather than
+        # leaving translate_engine pointing at a name nothing resolves to
+        # -- get_engine_class() already has a similar fallback for an
+        # unrecognized name, but silently, with no indication to the user
+        # that their engine choice just changed.
+        builtin_names = {engine.name for engine in builtin_engines}
+        if c.get('translate_engine') not in (
+                builtin_names | set(self._custom_engines_draft)):
+            c.save(translate_engine='Google(Free)New')
+
         engine_class = self._current_engine_class()
         engine_preferences = c.get('engine_preferences', {})
         prefs = engine_preferences.setdefault(engine_class.name, {})
         api_key_text = self.api_key_edit.text().strip()
         prefs['api_keys'] = [api_key_text] if api_key_text else []
         if hasattr(engine_class, 'model'):
-            prefs['model'] = self.model_edit.text().strip()
+            prefs['model'] = self.model_combo.currentText().strip()
         if hasattr(engine_class, 'temperature'):
             if self.temperature_enabled_check.isChecked():
                 prefs['temperature'] = self.temperature_slider.value() / 100

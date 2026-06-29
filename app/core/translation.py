@@ -2,13 +2,13 @@ import re
 import time
 from types import GeneratorType
 
-from ..engines import builtin_engines, GoogleFreeTranslateNew
+from ..engines import get_all_engines, GoogleFreeTranslateNew
 from ..engines.base import Base
 
 from .utils import sep, trim, dummy, traceback_error
 from .i18n import _
 from .config import get_config
-from .exception import TranslationFailed, TranslationCanceled
+from .exception import TranslationFailed, TranslationCanceled, NoAvailableApiKey
 from .handler import Handler
 
 
@@ -111,6 +111,36 @@ class Translation:
         return self.translator.max_error_count > 0 and \
             self.abort_count >= self.translator.max_error_count
 
+    def _verify_merge_alignment(self, row, original_text, translation):
+        """When merge is on, several paragraphs get sent as one request
+        joined by the engine's separator -- but the engine isn't obligated
+        to return the same number of separator-delimited pieces it was
+        given (LLM engines especially like to "rewrite" blank lines, but
+        even plain MT engines can do this occasionally). If the count
+        doesn't match, align_paragraph() (core/element.py) would otherwise
+        paper over the mismatch by merging the extra/missing piece into a
+        neighboring paragraph -- which is exactly what produces a paragraph
+        that's silently left untranslated, or one paragraph's translation
+        bleeding into another's. Re-translating this batch's pieces one at
+        a time guarantees a correct 1:1 mapping, at the cost of a few
+        extra requests -- only for batches that actually need it.
+        """
+        separator = self.translator.separator
+        originals = original_text.strip().split(separator)
+        if len(originals) <= 1:
+            return translation
+        translations = translation.strip().split(separator)
+        if len(translations) == len(originals):
+            return translation
+        self.log(_(
+            'Birleştirilmiş {} paragraf {} parça olarak döndü -- '
+            'her biri tek tek yeniden çevriliyor.')
+            .format(len(originals), len(translations)))
+        fixed = [
+            self.translate_text(row, piece) if piece.strip() else ''
+            for piece in originals]
+        return separator.join(fixed)
+
     def translate_text(self, row, text, retry=0, interval=0):
         """Translation engine service error code documentation:
         * https://cloud.google.com/apis/design/errors
@@ -125,6 +155,13 @@ class Translation:
         except Exception as e:
             if self.cancel_request() or self.need_stop():
                 raise TranslationCanceled(_('Translation canceled.'))
+            if isinstance(e, NoAvailableApiKey):
+                # Every remaining paragraph would fail the exact same way
+                # -- retrying 3 times with a 5s sleep each, per paragraph,
+                # across a whole book is pure wasted time. Log once, stop
+                # the whole job immediately instead.
+                self.log('%s\n%s' % (sep(), str(e)), True)
+                raise TranslationCanceled(str(e))
             self.abort_count += 1
             message = _(
                 'Failed to retrieve data from translate engine API.')
@@ -181,6 +218,8 @@ class Translation:
             else:
                 temp = ''.join([char for char in translation])
             translation = temp
+        translation = self._verify_merge_alignment(
+            paragraph.row, text, translation)
         translation = self.glossary.restore(translation)
         paragraph.translation = translation.strip()
         paragraph.engine_name = self.translator.name
@@ -232,8 +271,20 @@ class Translation:
         handler.handle()
 
         self.log(sep())
-        if self.batch and self.need_stop():
-            raise Exception(_('Translation failed.'))
+        if self.need_stop():
+            # need_stop() means the error handler in Handler's worker
+            # already drained the rest of the queue without translating
+            # it (see translate_text()'s TranslationCanceled path) -- the
+            # self.batch gate this used to have meant that only ever
+            # actually fired for a literal multi-file batch run, which
+            # nothing in this codebase sets is_batch=True for. A single
+            # EPUB hitting too many consecutive errors partway through
+            # was instead reported as a normal success: book.save() wrote
+            # out whatever got translated before the abort, silently
+            # leaving the rest of the file in its original language.
+            raise Exception(_(
+                'Çok sayıda art arda hata oluştuğu için çeviri durduruldu '
+                '-- dosyanın bir kısmı çevrilmeden kaldı.'))
         consuming = round((time.time() - start_time) / 60, 2)
         self.log(_('Time consuming: {} minutes').format(consuming))
         self.log(_('Translation completed.'))
@@ -244,7 +295,7 @@ def get_engine_class(engine_name=None):
     config = get_config()
     engine_name = engine_name or config.get('translate_engine')
     engines: dict[str, type[Base]] = {
-        engine.name: engine for engine in builtin_engines}
+        engine.name: engine for engine in get_all_engines()}
     engine_class = engines.get(engine_name, GoogleFreeTranslateNew)
     engine_preferences = config.get('engine_preferences')
     engine_class.set_config(engine_preferences.get(engine_class.name) or {})

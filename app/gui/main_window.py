@@ -1,23 +1,34 @@
 import os
+import time
+import webbrowser
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFileDialog, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QSystemTrayIcon,
-    QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSplitter,
+    QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
+    QWidget)
 
+from ..core import translated_library
 from ..core.config import get_config
+from ..core.glossary_extract import (
+    count_characters, extract_terms, merge_extracted_terms)
 from ..core.i18n import _
-from ..engines import builtin_engines
+from ..core.update_check import is_update_available
+from ..core.version import APP_VERSION
+from ..engines import get_all_engines
 from ..webnovel import library
 from .about_dialog import AboutDialog
+from .epub_reader import open_preview
+from .glossary_dialog import GlossaryDialog
+from .library_tab import LibraryTab
 from .notifications import get_tray_icon, notify
-from .preview_dialog import PreviewDialog
 from .queue_item import QueueItem, SUPPORTED_EXTENSIONS, STATUS_DONE
 from .settings_dialog import SettingsDialog
 from .splitter_dialog import SplitterDialog
+from .update_check_worker import UpdateCheckWorker
 from .webnovel_tab import WebNovelTab
 from .webnovel_worker import LibraryCheckWorker
 from .worker import QueueWorker
@@ -41,7 +52,12 @@ class MainWindow(QMainWindow):
         self.queue_items: list[QueueItem] = []
         self.worker: QueueWorker | None = None
         self.library_check_worker: LibraryCheckWorker | None = None
+        self.update_check_worker: UpdateCheckWorker | None = None
         self._intentional_quit = False
+        # Keeps non-modal EpubReaderWindow instances alive (see
+        # epub_reader.open_preview) -- Qt garbage collects a parentless
+        # top-level widget the moment nothing in Python still references it.
+        self._open_readers = []
 
         self.library_check_timer = QTimer(self)
         self.library_check_timer.timeout.connect(self.run_library_check)
@@ -51,11 +67,13 @@ class MainWindow(QMainWindow):
         self._refresh_lang_combos()
         self._setup_tray_icon()
         self.apply_webnovel_check_settings()
+        QTimer.singleShot(30_000, self.check_for_updates)
 
     def _active_background_threads(self):
         webnovel_workers = (
             self.webnovel_tab.info_worker, self.webnovel_tab.download_worker,
-            self.webnovel_tab.search_worker)
+            self.webnovel_tab.search_worker,
+            self.library_tab.library_update_worker)
         return [
             thread for thread in (self.worker, *webnovel_workers)
             if thread is not None and thread.isRunning()]
@@ -181,6 +199,45 @@ class MainWindow(QMainWindow):
             lines.append(_('...ve {} roman daha').format(len(updates) - 5))
         notify(_('Yeni bölümler var!'), '\n'.join(lines))
 
+    def check_for_updates(self):
+        # At most once a day -- GitHub's API rate limit is generous, but
+        # there is no reason to ask every single launch.
+        last_at = get_config().get('update_check_last_at', 0) or 0
+        if time.time() - last_at < 86400:
+            return
+        if (self.update_check_worker is not None
+                and self.update_check_worker.isRunning()):
+            return
+        self.update_check_worker = UpdateCheckWorker(self)
+        self.update_check_worker.release_found.connect(
+            self._on_update_check_result)
+        self.update_check_worker.start()
+
+    def _on_update_check_result(self, release):
+        get_config().save(update_check_last_at=time.time())
+        latest_version = release['version']
+        if not is_update_available(APP_VERSION, latest_version):
+            return
+        if get_config().get('update_check_skip_version') == latest_version:
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle(_('Yeni Sürüm Var'))
+        box.setText(
+            _('Yeni bir sürüm yayınlandı: {}\nŞu an kullanılan sürüm: {}')
+            .format(latest_version, APP_VERSION))
+        download_btn = box.addButton(
+            _('İndir'), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(_('Daha Sonra'), QMessageBox.ButtonRole.RejectRole)
+        skip_btn = box.addButton(
+            _('Bu Sürümü Atla'), QMessageBox.ButtonRole.DestructiveRole)
+        box.exec()
+
+        if box.clickedButton() == download_btn:
+            webbrowser.open(release['url'])
+        elif box.clickedButton() == skip_btn:
+            get_config().save(update_check_skip_version=latest_version)
+
     # -- menu bar -------------------------------------------------------
 
     def _build_menu_bar(self):
@@ -210,6 +267,7 @@ class MainWindow(QMainWindow):
                 _('Çeviri sürerken ayarlar değiştirilemez.'))
             return
         SettingsDialog(self).exec()
+        self._refresh_engine_combo()
         self.apply_webnovel_check_settings()
 
     def open_splitter(self):
@@ -238,7 +296,12 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self._build_translate_tab(), _('Çeviri Kuyruğu'))
         tabs.addTab(self._build_webnovel_tab(), _('Web\'den Al'))
+        tabs.addTab(self._build_library_tab(), _('Kütüphanem'))
         outer_layout.addWidget(tabs)
+
+    def _build_library_tab(self):
+        self.library_tab = LibraryTab()
+        return self.library_tab
 
     def _build_translate_tab(self):
         widget = QWidget()
@@ -247,6 +310,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(10)
 
         layout.addWidget(self._build_engine_bar())
+        layout.addWidget(self._build_glossary_bar())
         layout.addWidget(self._build_file_bar())
         layout.addWidget(self._build_output_bar())
 
@@ -279,7 +343,7 @@ class MainWindow(QMainWindow):
 
         row.addWidget(QLabel(_('Çeviri motoru:')))
         self.engine_combo = QComboBox()
-        for engine in builtin_engines:
+        for engine in get_all_engines():
             self.engine_combo.addItem(engine.alias, engine.name)
         self.engine_combo.currentIndexChanged.connect(self._refresh_lang_combos)
         row.addWidget(self.engine_combo)
@@ -294,32 +358,113 @@ class MainWindow(QMainWindow):
         self.target_lang_combo = QComboBox()
         row.addWidget(self.target_lang_combo)
 
-        apply_btn = QPushButton(_('Seçili dosyalara uygula'))
-        apply_btn.setToolTip(
+        self.apply_btn = QPushButton(_('Seçili dosyalara uygula'))
+        self.apply_btn.setToolTip(
             _('Yukarıdaki dil seçimini, listede seçili olan dosyalara uygular.'))
-        apply_btn.clicked.connect(self._apply_langs_to_selected)
-        row.addWidget(apply_btn)
+        self.apply_btn.clicked.connect(self._apply_langs_to_selected)
+        row.addWidget(self.apply_btn)
 
         row.addStretch()
         return bar
+
+    def _build_glossary_bar(self):
+        bar = QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+
+        # "Düzenle" and "Terim Çıkar" used to be two separate buttons --
+        # folded into one menu so this row doesn't keep growing every
+        # time a glossary-related action gets added. A plain QPushButton
+        # popping its own QMenu (rather than QToolButton) so it keeps
+        # the app's regular button styling instead of the OS's bare
+        # native look.
+        self.glossary_btn = QPushButton(_('Sözlük ▾'))
+        self.glossary_menu = QMenu(self.glossary_btn)
+        self.glossary_menu.addAction(_('Düzenle...')).triggered.connect(
+            self._open_glossary_dialog)
+        extract_action = self.glossary_menu.addAction(
+            _('Seçili Dosyadan Terim Çıkar...'))
+        extract_action.setToolTip(_(
+            'Seçili dosyadaki sık geçen özel isim/terimleri analiz edip '
+            'sözlüğe ekler -- çevirilerini doldurman için.'))
+        extract_action.triggered.connect(self._extract_glossary_terms)
+        self.glossary_btn.clicked.connect(self._show_glossary_menu)
+        row.addWidget(self.glossary_btn)
+
+        self.glossary_enabled_check = QCheckBox(_('Sözlüğü Kullan'))
+        self.glossary_enabled_check.setChecked(
+            get_config().get('glossary_enabled', False))
+        self.glossary_enabled_check.toggled.connect(
+            lambda checked: get_config().save(glossary_enabled=checked))
+        row.addWidget(self.glossary_enabled_check)
+
+        row.addStretch()
+        return bar
+
+    def _show_glossary_menu(self):
+        self.glossary_menu.exec(
+            self.glossary_btn.mapToGlobal(self.glossary_btn.rect().bottomLeft()))
+
+    def _resolve_glossary_path(self):
+        path = get_config().get('glossary_path')
+        if path:
+            return path
+        path, _filter = QFileDialog.getSaveFileName(
+            self, _('Sözlük Dosyası Oluştur'), 'sozluk.txt',
+            'Metin Dosyası (*.txt)')
+        if not path:
+            return None
+        get_config().save(glossary_path=path)
+        return path
+
+    def _open_glossary_dialog(self):
+        path = self._resolve_glossary_path()
+        if not path:
+            return
+        GlossaryDialog(path, self).exec()
+
+    def _extract_glossary_terms(self):
+        rows = {index.row() for index in self.table.selectedIndexes()}
+        if len(rows) != 1:
+            QMessageBox.information(
+                self, _('Dosya Seç'),
+                _('Önce listeden kelime çıkarılacak tek bir dosya seç.'))
+            return
+        path = self._resolve_glossary_path()
+        if not path:
+            return
+        item = self.queue_items[next(iter(rows))]
+        terms = extract_terms(item.path, item.input_format)
+        added = merge_extracted_terms(path, terms)
+        if added:
+            QMessageBox.information(
+                self, _('Sözlük Güncellendi'),
+                _('{} yeni terim bulundu ve sözlüğe eklendi. Çevirilerini '
+                  'doldurmak için düzenleyici açılıyor.').format(added))
+        else:
+            QMessageBox.information(
+                self, _('Yeni Terim Bulunamadı'),
+                _('Bu dosyada sözlükte henüz olmayan, sık geçen bir terim '
+                  'bulunamadı.'))
+        GlossaryDialog(path, self, highlight_last_n=added).exec()
 
     def _build_file_bar(self):
         bar = QWidget()
         row = QHBoxLayout(bar)
         row.setContentsMargins(0, 0, 0, 0)
 
-        add_btn = QPushButton(_('+ Dosya Ekle'))
-        add_btn.setObjectName('primaryButton')
-        add_btn.clicked.connect(self.add_files)
-        row.addWidget(add_btn)
+        self.add_btn = QPushButton(_('+ Dosya Ekle'))
+        self.add_btn.setObjectName('primaryButton')
+        self.add_btn.clicked.connect(self.add_files)
+        row.addWidget(self.add_btn)
 
-        remove_btn = QPushButton(_('Seçileni Kaldır'))
-        remove_btn.clicked.connect(self.remove_selected)
-        row.addWidget(remove_btn)
+        self.remove_btn = QPushButton(_('Seçileni Kaldır'))
+        self.remove_btn.clicked.connect(self.remove_selected)
+        row.addWidget(self.remove_btn)
 
-        clear_btn = QPushButton(_('Listeyi Temizle'))
-        clear_btn.clicked.connect(self.clear_queue)
-        row.addWidget(clear_btn)
+        self.clear_btn = QPushButton(_('Listeyi Temizle'))
+        self.clear_btn.clicked.connect(self.clear_queue)
+        row.addWidget(self.clear_btn)
 
         row.addStretch()
         hint = QLabel(_('İpucu: dosyaları doğrudan pencereye sürükleyip bırakabilirsin.'))
@@ -395,7 +540,7 @@ class MainWindow(QMainWindow):
         item = self.queue_items[next(iter(rows))]
         if item.status != STATUS_DONE or not item.output_path:
             return
-        PreviewDialog(item.output_path, self).exec()
+        self._open_readers.append(open_preview(item.output_path, self))
 
     def _build_log_panel(self):
         self.log_view = QPlainTextEdit()
@@ -452,7 +597,25 @@ class MainWindow(QMainWindow):
 
     def _current_engine_class(self):
         engine_name = self.engine_combo.currentData()
-        return next(e for e in builtin_engines if e.name == engine_name)
+        engines = get_all_engines()
+        return next(
+            (e for e in engines if e.name == engine_name), engines[0])
+
+    def _refresh_engine_combo(self):
+        """Re-reads get_all_engines() so a custom engine added/edited in
+        Settings shows up immediately, instead of only after a restart --
+        called after the Settings dialog closes, like
+        apply_webnovel_check_settings().
+        """
+        current_name = self.engine_combo.currentData()
+        self.engine_combo.blockSignals(True)
+        self.engine_combo.clear()
+        for engine in get_all_engines():
+            self.engine_combo.addItem(engine.alias, engine.name)
+        index = self.engine_combo.findData(current_name)
+        self.engine_combo.setCurrentIndex(max(index, 0))
+        self.engine_combo.blockSignals(False)
+        self._refresh_lang_combos()
 
     def _refresh_lang_combos(self):
         engine_class = self._current_engine_class()
@@ -502,6 +665,18 @@ class MainWindow(QMainWindow):
         self._add_paths(paths)
 
     def _add_paths(self, paths):
+        if self.worker is not None and self.worker.isRunning():
+            # Drag-and-drop reaches this directly, bypassing add_btn's
+            # disabled state -- appending while QueueWorker is mid-run
+            # wouldn't crash it the way removing does, but the new file
+            # would silently start translating under whatever engine was
+            # selected when the run started, with no "Çeviriyi Başlat"
+            # ever clicked for it. Simpler to just disallow it here too.
+            QMessageBox.information(
+                self, _('Çeviri Sürüyor'),
+                _('Çeviri çalışırken kuyruğa dosya eklenemez. Önce '
+                  'çeviriyi durdur ya da tamamlanmasını bekle.'))
+            return
         for path in paths:
             extension = os.path.splitext(path)[1].lstrip('.').lower()
             if extension not in SUPPORTED_EXTENSIONS:
@@ -541,6 +716,39 @@ class MainWindow(QMainWindow):
                 self, _('Uyarı'), _('Önce çevrilecek dosya ekle.'))
             return
 
+        engine_class = self._current_engine_class()
+        if engine_class.need_api_key:
+            prefs = get_config().get('engine_preferences', {}).get(
+                engine_class.name, {})
+            api_keys = prefs.get('api_keys') or []
+            if not api_keys or not (api_keys[0] or '').strip():
+                QMessageBox.warning(
+                    self, _('API Anahtarı Eksik'),
+                    _('"{}" motoru bir API anahtarı gerektiriyor. Lütfen '
+                      'Araçlar > Ayarlar > Motor ve Hız\'tan anahtarını '
+                      'gir.').format(engine_class.alias))
+                return
+
+        if not engine_class.free:
+            total_chars = 0
+            for item in self.queue_items:
+                try:
+                    total_chars += count_characters(
+                        item.path, item.input_format)
+                except Exception:
+                    pass
+            answer = QMessageBox.question(
+                self, _('Ücretli Motor'),
+                _('Seçili motor ("{}") ücretli. Kuyruktaki dosyaların '
+                  'toplam karakter sayısı: ~{}.\n\n'
+                  'Tam fiyatlandırma sağlayıcıya göre değişir ve sık '
+                  'güncellenir, burada sabit bir tutar gösterilmiyor -- '
+                  'güncel fiyatı motor sağlayıcısının kendi sitesinden '
+                  'kontrol et.\n\nÇeviriye devam edilsin mi?')
+                .format(engine_class.alias, total_chars))
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
         if self.worker is not None:
             self.worker.wait()
 
@@ -561,6 +769,22 @@ class MainWindow(QMainWindow):
         self.engine_combo.setEnabled(False)
         self.source_lang_combo.setEnabled(False)
         self.target_lang_combo.setEnabled(False)
+        # QueueWorker iterates self.queue_items by row index in its own
+        # thread -- removing/clearing/adding rows here while it's running
+        # desyncs those indices out from under it (the GUI list shrinks,
+        # the worker keeps reporting progress for rows that no longer
+        # exist) and crashes _on_item_progress/_on_item_started with an
+        # IndexError, repeatedly, for every signal the worker still emits.
+        self.add_btn.setEnabled(False)
+        self.remove_btn.setEnabled(False)
+        self.clear_btn.setEnabled(False)
+        # Same hazard as the list mutations above, just on item attributes
+        # instead of list length: QueueWorker reads item.source_lang/
+        # target_lang off these exact QueueItem objects when it gets to
+        # them (worker.py), so rewriting a not-yet-started item's
+        # language mid-run would silently translate it into the wrong
+        # target language with no error at all.
+        self.apply_btn.setEnabled(False)
         self.log_view.appendPlainText(_('--- Çeviri başlatıldı ---'))
 
     def _resolve_output_dir(self, item: QueueItem):
@@ -584,11 +808,15 @@ class MainWindow(QMainWindow):
     # -- worker signal handlers -------------------------------------------------
 
     def _on_item_started(self, row):
+        if row >= len(self.queue_items):
+            return
         self.table.item(row, 4).setText(STATUS_LABELS['running'])
         self.table.scrollToItem(self.table.item(row, 0))
         self.current_file_label.setText(self.queue_items[row].title)
 
     def _on_item_progress(self, row, fraction, message):
+        if row >= len(self.queue_items):
+            return
         self.overall_progress.setValue(int(fraction * 100))
         self.current_file_label.setText(
             '%s — %s' % (self.queue_items[row].title, message))
@@ -597,12 +825,24 @@ class MainWindow(QMainWindow):
         self.log_view.appendPlainText(message)
 
     def _on_item_finished(self, row, status, message):
+        if row >= len(self.queue_items):
+            return
         self.table.item(row, 4).setText(
             STATUS_LABELS.get(status, status))
         self.queue_items[row].status = status
         self.queue_items[row].output_path = (
             message if status == STATUS_DONE else None)
-        if status != STATUS_DONE:
+        if status == STATUS_DONE:
+            item = self.queue_items[row]
+            answer = QMessageBox.question(
+                self, _('Kütüphaneye Ekle'),
+                _('"{}" Kütüphanem sekmesine eklensin mi? (Kapak resmiyle '
+                  'görünür, içinde okuyabilirsin.)').format(item.title))
+            if answer == QMessageBox.StandardButton.Yes:
+                translated_library.record(
+                    item.output_path, item.title, item.input_format)
+            self.library_tab.refresh()
+        else:
             self.log_view.appendPlainText(
                 '[%s] %s' % (self.queue_items[row].title, message))
 
@@ -616,6 +856,10 @@ class MainWindow(QMainWindow):
         self.engine_combo.setEnabled(True)
         self.source_lang_combo.setEnabled(True)
         self.target_lang_combo.setEnabled(True)
+        self.add_btn.setEnabled(True)
+        self.remove_btn.setEnabled(True)
+        self.clear_btn.setEnabled(True)
+        self.apply_btn.setEnabled(True)
         if was_cancelled:
             self.overall_progress.setValue(0)
             self.current_file_label.setText(_('İptal edildi.'))

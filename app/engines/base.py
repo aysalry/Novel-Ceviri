@@ -3,7 +3,7 @@ import os.path
 import requests
 
 from ..core.utils import traceback_error, request, lang_as_iso639_1
-from ..core.exception import UnexpectedResult
+from ..core.exception import UnexpectedResult, NoAvailableApiKey
 from ..core.i18n import _
 
 from .languages import lang_directionality
@@ -171,6 +171,10 @@ class Base:
         return self._get_source_code() == 'auto'
 
     def translate(self, text):
+        if self.need_api_key and not self.api_key:
+            raise NoAvailableApiKey(_(
+                '{} için bir API anahtarı girilmemiş. Lütfen Ayarlar > '
+                'Motor ve Hız\'tan anahtarını gir.').format(self.alias))
         response = None
         try:
             response = request(
@@ -187,9 +191,20 @@ class Base:
                 error_message += '\n\n' + e.response.text
             elif not self.stream and response is not None:
                 error_message += '\n\n' + response
-            # Swap a valid API key if necessary.
-            if self.need_swap_api_key(error_message) and self.swap_api_key():
-                return self.translate(text)
+            # Swap to another configured key if there is one; if this was
+            # the only key (the common case) or all of them are now bad,
+            # say so plainly instead of dumping a raw traceback -- using
+            # match_error() directly rather than need_swap_api_key(),
+            # since that also requires len(self.api_keys) > 0, which is
+            # already false here for a single-key setup (the one key was
+            # already popped into self.api_key at __init__ time).
+            if self.need_api_key and self.match_error(error_message):
+                if self.swap_api_key():
+                    return self.translate(text)
+                raise NoAvailableApiKey(_(
+                    '{} için geçerli bir API anahtarı bulunamadı (anahtar '
+                    'reddedildi). Ayarlar > Motor ve Hız\'tan anahtarını '
+                    'kontrol et.').format(self.alias))
             raise UnexpectedResult(
                 _('Can not parse returned response. Raw data: {}')
                 .format('\n\n' + error_message))

@@ -77,6 +77,11 @@ class QueueWorker(QThread):
                 self.item_finished.emit(row, STATUS_ERROR, str(e))
                 continue
             else:
+                # Whether this goes into Kütüphanem is the GUI's call, not
+                # the worker's -- _on_item_finished prompts for it, mirroring
+                # the same "kütüphaneye eklensin mi?" question Web'den Al
+                # asks after a download, instead of silently adding every
+                # translation (a one-off test run included) to the library.
                 self.item_finished.emit(row, STATUS_DONE, output_path)
 
         self.queue_finished.emit()

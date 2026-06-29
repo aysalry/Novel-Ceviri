@@ -34,9 +34,12 @@ class MadaraSource(NovelSource):
                 _('Bu site şu anda desteklenmiyor (tanınan bir şablon değil).'))
         tree = lxml_html.fromstring(page_html)
 
-        title_el = (
-            tree.find_class('post-title') or tree.xpath('//h1')
-            or tree.xpath('//title'))
+        # Deliberately no //title fallback -- that's the browser tab
+        # text (often "Novel Name - SiteName"), and silently using it as
+        # the novel's title bakes the site's own suffix into the saved
+        # EPUB's metadata. Falling through to the bare url below is a
+        # more honest "couldn't find a clean title" than a wrong one.
+        title_el = tree.find_class('post-title') or tree.xpath('//h1')
         title = title_el[0].text_content().strip() if title_el else url
 
         cover_url = None

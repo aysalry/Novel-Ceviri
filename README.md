@@ -18,22 +18,44 @@
 ## Ekran Görüntüleri
 
 <div align="center">
-<img src="screenshots/ceviri-kuyrugu.png" width="80%" alt="Çeviri kuyruğu ekranı" />
+<img src="screenshots/3.png" width="80%" alt="Çeviri kuyruğu ekranı" />
 <br /><br />
-<img src="screenshots/webden-al.png" width="80%" alt="Web'den roman indirme ekranı" />
+<img src="screenshots/1.png" width="80%" alt="Web'den roman arama ekranı" />
+<br /><br />
+<img src="screenshots/2.png" width="80%" alt="Web'den roman indirme ekranı" />
+<br /><br />
+<img src="screenshots/4.png" width="80%" alt="Kütüphanem ekranı" />
 </div>
 
 ## Özellikler
 
+### Çeviri
+
 - **EPUB, TXT ve SRT** dosyalarını çevirir -- biçim, resim, CSS, altyazı zamanlaması bozulmadan korunur.
-- **Google (Free), Microsoft Edge (Free), DeepL (Free/Pro) ve Gemini** motorları arasından seç; Gemini için isteğe bağlı "yaratıcılık" (temperature) ayarı.
-- **Gerçek hız**: kısa paragrafları birleştirip istek sayısını azaltma, eşzamanlı istek gönderme, kalıcı önbellek (aynı paragrafı iki kez çevirmez) ve otomatik yeniden deneme bir arada.
-- **Web'den roman indirme**: novelfire.net, novelight.net, novelbuddy.com ve "Madara" temalı birçok sitedeki romanları isimle arayıp doğrudan EPUB'a çevir. Tür/kategori bilgisi de gösterilir.
-- **Kütüphane takibi**: indirdiğin romanları arka planda periyodik olarak kontrol eder, yeni bölüm çıkınca masaüstü bildirimi gönderir; yeni bölümleri var olan EPUB'una ekler (üzerine yazmaz).
+- **8 hazır motor** arasından seç: Google (Free), Microsoft Edge (Free), DeepL (Free/Pro), Gemini, OpenAI, Claude (Anthropic), OpenRouter -- ayrıca kendi API'ni JSON ile tanımlayıp listeye ekleyebilirsin (kendi sunucun, OpenAI-uyumlu bir model, vb.).
+- **Gerçek hız ve güvenilirlik**: her motor için ayrı eşzamanlı istek sayısı ve istekler arası bekleme süresi (ücretsiz/limitli motorlarda varsayılan olarak temkinli, ücretli motorlarda daha hızlı); hız sınırına çarpınca otomatik yeniden deneme; kısa paragrafları birleştirip istek sayısını azaltma; kalıcı önbellek (aynı paragrafı iki kez çevirmez).
+- **Sözlük desteği**: karakter/yer adlarının her bölümde aynı şekilde çevrilmesini (ya da hiç çevrilmemesini) sağlar. Seçili dosyadan sık geçen özel isim/terimleri otomatik çıkarıp sözlüğe önerir.
+- **Ücretli motor uyarısı**: ücretli bir motorla çeviriye başlamadan önce toplam karakter sayısını gösterir, yanlışlıkla büyük bir faturayla karşılaşmazsın.
+- **İki dilli çıktı**: orijinal metni çevirinin altında/üstünde/yalnızca çeviri şeklinde tutma seçeneği.
+- Yoksay/koru/filtre kuralları (CSS seçici veya metin eşleşmesiyle) ile neyin çevrileceğini ince ayarla.
+
+### Web'den roman indirme
+
+- novelfire.net, novelight.net, novelbuddy.com ve "Madara" temalı birçok sitedeki romanları **isimle ara** (kapak resimleriyle, kütüphane görünümünde) veya **adresini yapıştır**, bölüm aralığını seç, doğrudan EPUB'a çevir.
+- **Kütüphane takibi**: indirdiğin romanları arka planda periyodik olarak kontrol eder, yeni bölüm çıkınca masaüstü bildirimi gönderir; tek tıkla veya hepsini birden güncelleyebilirsin -- yeni bölümler var olan EPUB'a eklenir, üzerine yazılmaz.
 - **Devam ettirilebilir indirme**: bağlantı kesilse veya iptal etsen de, daha önce inen bölümler diskte kalır.
-- **Sözlük desteği**: karakter/yer adlarının her bölümde aynı şekilde çevrilmesini (ya da hiç çevrilmemesini) sağlar.
-- **İki dilli çıktı**: orijinal metni çevirinin altında/üstünde tutma seçeneği.
+
+### Kütüphane ve okuma
+
+- **Kütüphanem** sekmesinde çevirdiğin tüm kitapları ve takip ettiğin romanları kapak resimleriyle (kütüphane/galeri görünümünde) görürsün; okuma ilerlemen kapak üzerinde bir çubukla gösterilir.
+- **Uygulama içi EPUB okuyucu**: bölüm listesi, yazı tipi seçimi, yazı boyutu ve açık/karanlık/sepya okuma temalarıyla kitabı uygulamadan çıkmadan okuyabilirsin.
+- Kitapları doğrudan masaüstüne sürükleyip kopyalayabilir, dosya konumunu Explorer'da açabilirsin.
+
+### Genel
+
 - **Sade ama tatlı arayüz**: açık pastel ve karanlık tema, sistem tepsisi desteği, motor bağlantısını tek tıkla test etme.
+- **İlk kurulum sihirbazı**: programı ilk açtığında motor ve hedef dili birkaç tıkla ayarlamana yardımcı olur.
+- **Güncelleme kontrolü**: yeni bir sürüm çıktığında haber verir, dilersen o sürümü atlayabilirsin.
 - Çöken/hata veren bir şey olursa `%APPDATA%/NovelCeviri/app.log` dosyasında neyin yanlış gittiğini bulabilirsin.
 
 ## Kurulum
@@ -45,8 +67,8 @@
 ### Kaynak koddan çalıştırma
 
 ```bash
-git clone <bu-deponun-adresi>
-cd "ceviri novel"
+git clone https://github.com/aysalry/Novel-Ceviri.git
+cd "Novel-Ceviri"
 pip install -r requirements.txt
 python main.py
 ```
@@ -65,9 +87,10 @@ pyinstaller NovelCeviri.spec
 ## Kullanım
 
 1. **Çeviri Kuyruğu** sekmesinde "+ Dosya Ekle" ile EPUB/TXT/SRT dosyalarını ekle (ya da pencereye sürükle-bırak).
-2. Çeviri motorunu ve hedef dili seç, "Çeviriyi Başlat"a bas.
-3. Elindeki dosya yoksa **Web'den Al** sekmesinde roman adını ara, bölüm aralığını seç, "EPUB Oluştur"a bas -- "Çeviri kuyruğuna ekle" işaretliyse indirilen EPUB otomatik olarak çeviri kuyruğuna eklenir.
-4. Motor/API anahtarı ayarlarını, hız ayarlarını ve görünümü **Araçlar > Ayarlar**'dan değiştirebilirsin; "Test Et" ile bir motorun gerçekten çalıştığını kaydetmeden önce doğrulayabilirsin.
+2. Çeviri motorunu ve hedef dili seç, istersen **Sözlük** menüsünden seçili dosyadan terim çıkarıp özel isimlerin çevirisini sabitle, "Çeviriyi Başlat"a bas.
+3. Elindeki dosya yoksa **Web'den Al** sekmesinde roman adını ara (kapak resimleriyle gelen sonuçlardan birini seç) veya adresini yapıştır, bölüm aralığını seç, "EPUB Oluştur"a bas -- "Çeviri kuyruğuna ekle" işaretliyse indirilen EPUB otomatik olarak çeviri kuyruğuna eklenir, ister Kütüphanem'e de eklenir.
+4. **Kütüphanem** sekmesinden çevirdiğin kitapları uygulama içi okuyucuyla okuyabilir, takip ettiğin romanları tek tıkla güncelleyebilirsin.
+5. Motor/API anahtarı ayarlarını, hız ayarlarını ve görünümü **Araçlar > Ayarlar**'dan değiştirebilirsin; "Test Et" ile bir motorun gerçekten çalıştığını kaydetmeden önce doğrulayabilirsin.
 
 ## Teşekkürler ve Lisans
 
@@ -77,4 +100,4 @@ Roman indirme özelliği, [dteviot](https://github.com/dteviot)'un **["WebToEpub
 
 ## Sorumluluk Reddi
 
-Bu araç yalnızca kendi sahip olduğun ya da telif hakkı içermeyen içerikleri çevirmek/indirmek için tasarlanmıştır. Üçüncü taraf sitelerden içerik çekerken o sitelerin kullanım şartlarına uymak kullanıcının sorumluluğundadır.
+Bu araç yalnızca kendi sahip olduğun ya da telif hakkı içermeyen içerikleri çevirmek/indirmek için tasarlanmıştır. Üçüncü taraf sitelerden içerik çekerken o sitelerin kullanım şartlarına uymak kullanıcının sorumluluğudur.

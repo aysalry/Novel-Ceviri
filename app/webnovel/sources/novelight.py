@@ -138,8 +138,16 @@ class NovelightSource(NovelSource):
                         'X-Requested-With': 'XMLHttpRequest',
                         'Referer': book_url})
                 payload = json.loads(response_text)
-            except Exception:
-                break
+            except Exception as e:
+                # A genuine failure (network/parse) is not the same as
+                # "ran out of pages" (that's the empty-fragment/added==0
+                # checks below) -- silently returning whatever was
+                # gathered so far made an incomplete chapter list look
+                # like a complete, successfully-fetched novel.
+                raise NovelSourceError(
+                    _('Bölüm listesi {}. sayfada kesildi (toplam {} bölüm '
+                      'bulundu) -- hata: {}')
+                    .format(page, len(chapters), e))
             fragment = payload.get('html', '')
             if not fragment.strip():
                 break
@@ -186,13 +194,23 @@ class NovelightSource(NovelSource):
         except Exception as e:
             raise NovelSourceError(_('Bölüm içeriği alınamadı: {}').format(e))
 
+        raw_content = payload.get('content', '').strip()
+        if not raw_content:
+            raise NovelSourceError(_('Bölüm içeriği boş döndü (kilitli olabilir).'))
         content_class = payload.get('class', '')
-        content_tree = lxml_html.fromstring(payload.get('content', ''))
+        content_tree = lxml_html.fromstring(raw_content)
         if content_class:
             paragraph_divs = content_tree.xpath(
                 '//div[contains(@class, "%s")]/div' % content_class)
         else:
+            # No class to scope by -- this grabs every div on the
+            # fragment, which is wrong often enough to flag rather than
+            # silently hand back garbled/empty paragraphs.
             paragraph_divs = content_tree.xpath('//div')
         paragraphs = [
             text for div in paragraph_divs if (text := clean_text(div))]
+        if not paragraphs:
+            raise NovelSourceError(
+                _('Bölüm metni ayrıştırılamadı (site yapısı değişmiş '
+                  'olabilir).'))
         return ChapterContent(title=title, paragraphs=paragraphs)

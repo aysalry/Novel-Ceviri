@@ -1,6 +1,4 @@
 import json
-import time
-import random
 
 from ..core.utils import request
 from ..core.i18n import _
@@ -10,17 +8,32 @@ from .languages import deepl
 
 
 class DeeplTranslate(Base):
-    """Official DeepL API -- needs a key, but DeepL's free key tier (500k
-    chars/month) is generous and the translation quality is a step above
-    Google for many languages, Turkish included.
+    """Official DeepL API, free tier -- needs a free DeepL account's API
+    key (always ends in ":fx"), good for 500k chars/month at no cost.
+    Translation quality is a step above Google for many languages,
+    Turkish included. Pairs with api-free.deepl.com specifically -- a
+    Pro key won't work here, see DeeplProTranslate.
     """
     name = 'DeepL'
-    alias = 'DeepL'
+    alias = 'DeepL (Ücretsiz API)'
     lang_codes = Base.load_lang_codes(deepl)
     endpoint = 'https://api-free.deepl.com/v2/translate'
     usage_endpoint = 'https://api-free.deepl.com/v2/usage'
     placeholder = ('<m id={} />', r'<m\s+id={}\s+/>')
     api_key_errors = ['403', '456']
+    key_hint = _(
+        'www.deepl.com/pro-api adresinden ücretsiz hesap açıp anahtar al '
+        '-- anahtarın sonu ":fx" ile bitmeli, Pro anahtarla burada 403 '
+        'hatası alırsın.')
+
+    # Unlike every other engine here, this had no concurrency cap at all --
+    # Base defaults to 0, which the handler treats as "one worker per
+    # paragraph," so a normal-sized chapter fired its whole paragraph list
+    # at DeepL simultaneously. DeepL's API rate-limits bursts like that
+    # (429), so this was the one engine left exposed to constant
+    # rate-limit failures on anything but a tiny file.
+    concurrency_limit = 4
+    request_interval: float = 0.3
 
     def get_usage(self):
         # See: https://www.deepl.com/docs-api/general/get-usage/
@@ -56,80 +69,11 @@ class DeeplTranslate(Base):
 
 class DeeplProTranslate(DeeplTranslate):
     name = 'DeepL(Pro)'
-    alias = 'DeepL (Pro)'
+    alias = 'DeepL (Pro API - Ücretli)'
+    key_hint = _(
+        'www.deepl.com/pro-api adresinden ücretli bir hesap açıp anahtar '
+        'al -- anahtarın sonu ":fx" ile BİTMEMELİ, Ücretsiz anahtarla '
+        'burada 403 hatası alırsın.')
     endpoint = 'https://api.deepl.com/v2/translate'
     usage_endpoint = 'https://api.deepl.com/v2/usage'
 
-
-class DeeplFreeTranslate(Base):
-    """DeepL's own web-client endpoint -- no API key, like the Google Free
-    engines, but DeepL's free endpoint is more eager to rate-limit, hence
-    the conservative concurrency/interval defaults.
-    """
-    name = 'DeepL(Free)'
-    alias = 'DeepL (Free)'
-    free = True
-    lang_codes = Base.load_lang_codes(deepl)
-    endpoint = 'https://www2.deepl.com/jsonrpc?client=chrome-extension,1.5.1'
-    need_api_key = False
-    placeholder = DeeplTranslate.placeholder
-
-    concurrency_limit = 1
-    request_interval = 1.0
-
-    def _vars(self, text):
-        uid = random.randint(1000000000, 9999999999)
-        count_i = text.count('i')
-        ts = int(time.time() * 1000)
-        if count_i > 0:
-            count_i += 1
-            ts = ts - ts % count_i + count_i
-        return uid, ts
-
-    def get_headers(self):
-        return {
-            'Accept': '*/*',
-            'Accept-Encoding': 'gzip, deflate',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Authorization': 'None',
-            'Authority': 'www2.deepl.com',
-            'Content-Type': 'application/json; charset=utf-8',
-            'User-Agent': 'DeepLBrowserExtension/1.5.1 Mozilla/5.0 '
-            '(Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, '
-            'like Gecko) Chrome/114.0.0.0 Safari/537.36',
-            'Origin': 'chrome-extension://cofdbpoegempjloogbagkncekinflcnj',
-            'Referer': 'https://www.deepl.com/',
-        }
-
-    def get_body(self, text):
-        regional_variant = {}
-        target_lang = self._get_target_code()
-        if '-' in target_lang:
-            portions = target_lang.split('-')
-            variant = '-'.join([portions[0].lower(), portions[1]])
-            regional_variant['regionalVariant'] = variant
-            target_lang = portions[0]
-        uid, ts = self._vars(text)
-
-        body = json.dumps({
-            'jsonrpc': '2.0',
-            'method': 'LMT_handle_texts',
-            'params': {
-                'commonJobParams': regional_variant,
-                'texts': [{'text': text}],
-                'splitting': 'newlines',
-                'lang': {
-                    'source_lang_user_selected': self._get_source_code(),
-                    'target_lang': target_lang,
-                },
-                'timestamp': ts
-            },
-            'id': uid
-        }, separators=(',', ':'))
-
-        if (uid + 3) % 13 == 0 or (uid + 5) % 29 == 0:
-            return body.replace('"method":"', '"method" : "')
-        return body.replace('"method":"', '"method": "')
-
-    def get_result(self, response):
-        return json.loads(response)['result']['texts'][0]['text']

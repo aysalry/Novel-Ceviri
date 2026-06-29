@@ -14,6 +14,8 @@ from itertools import zip_longest
 
 from lxml import etree
 
+from ..core.utils import parse_xml_lenient
+
 XHTML_NS = 'http://www.w3.org/1999/xhtml'
 DC_NS = 'http://purl.org/dc/elements/1.1/'
 OPF_NS = 'http://www.idpf.org/2007/opf'
@@ -120,13 +122,13 @@ class EpubBook:
         self._modified_xml: dict[str, etree._Element] = {}
 
         with zipfile.ZipFile(path, 'r') as zf:
-            container = etree.fromstring(zf.read('META-INF/container.xml'))
+            container = parse_xml_lenient(zf.read('META-INF/container.xml'))
             rootfile = container.find(
                 './/{%s}rootfile' % CONTAINER_NS)
             self.opf_path = rootfile.get('full-path')
             self.opf_dir = posixpath.dirname(self.opf_path)
 
-            self.opf_root = etree.fromstring(zf.read(self.opf_path))
+            self.opf_root = parse_xml_lenient(zf.read(self.opf_path))
             self._modified_xml[self.opf_path] = self.opf_root
 
             manifest_el = self.opf_root.find('{%s}manifest' % OPF_NS)
@@ -146,7 +148,7 @@ class EpubBook:
                     continue
                 if item.get('media-type') in XHTML_MEDIA_TYPES:
                     full_path = _join(self.opf_dir, item.get('href'))
-                    root = etree.fromstring(zf.read(full_path))
+                    root = parse_xml_lenient(zf.read(full_path))
                     self._modified_xml[full_path] = root
                     self.pages.append(Page(item_id, item.get('href'), root))
 
@@ -187,7 +189,7 @@ class EpubBook:
 
     def _load_ncx(self, zf, href):
         full_path = _join(self.opf_dir, href)
-        root = etree.fromstring(zf.read(full_path))
+        root = parse_xml_lenient(zf.read(full_path))
         self._modified_xml[full_path] = root
         nav_map = root.find('{%s}navMap' % NCX_NS)
         if nav_map is None:
@@ -210,7 +212,7 @@ class EpubBook:
 
     def _load_nav(self, zf, href):
         full_path = _join(self.opf_dir, href)
-        root = etree.fromstring(zf.read(full_path))
+        root = parse_xml_lenient(zf.read(full_path))
         self._modified_xml[full_path] = root
         toc_nav = None
         for nav in root.iter('{%s}nav' % XHTML_NS):

@@ -91,8 +91,16 @@ class NovelFireSource(NovelSource):
                 page_url += '?page=%d' % page
             try:
                 page_html = self._get(page_url)
-            except Exception:
-                break
+            except Exception as e:
+                # A page genuinely failing to load (timeout, transient
+                # 5xx) is not the same as "this was the last page" (that
+                # case is new_count == 0 below) -- silently returning
+                # whatever was gathered so far made an incomplete chapter
+                # list look like a complete, successfully-fetched novel.
+                raise NovelSourceError(
+                    _('Bölüm listesi {}. sayfada kesildi (toplam {} bölüm '
+                      'bulundu) -- ağ hatası: {}')
+                    .format(page, len(chapters), e))
             tree = lxml_html.fromstring(page_html)
             new_count = 0
             for a in tree.xpath('//li/a[contains(@href, "/chapter-")]'):
